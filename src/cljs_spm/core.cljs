@@ -1,9 +1,9 @@
 (ns cljs-spm.core
-  (:require [reagent.core :as reagent :refer [atom]]
+  (:require [reagent.core :as reagent :refer [atom cursor]]
             [reagent.ratom :refer [reaction]]
             [reagent.dom :as rdom]))
 
-(def window-width (atom 0))
+(defonce window-width (atom 0))
 
 (enable-console-print!)
 
@@ -13,8 +13,9 @@
   (let [p (js/Number.parseFloat s)]
     (if (js/Number.isNaN p) s p)))
 
-(def model-parsed
+(defonce model-parsed
   (reaction
+    (println "Parsing text")
     (let [rows   (clojure.string/split-lines @textarea-text)
           rows   (map (fn [line] (clojure.string/split line ",")) rows)
           header (distinct (map keyword (first rows)))
@@ -22,23 +23,25 @@
           rows   (map (partial zipmap header) rows)]
         {:rows rows :axis header})))
 
-(defonce view-opts (reagent/atom {:enabled-axis #{} :category nil}))
+(defonce view-opts (atom {:enabled-axis #{} :category nil}))
+
+(defonce active-category (cursor view-opts [:category]))
 
 (defn hist
-  ([xs] (hist (min 10 (count xs)) xs))
-  ([n xs]
-   (let [m- (apply min xs)
-         m+ (apply max xs)
+  ([xs] (hist (apply min xs) (apply max xs) xs))
+  ([m- m+ xs]
+   ; (assert (<= m- m+))
+   (let [n (min 10 (count xs))
          d  (double (- m+ m-))
          w  (/ d n)
          f  (fn [x] (int (quot (- x m- 0.0000001) w)))
          gs (group-by f xs)]
      (mapv (comp count gs) (range 0 n)))))
 
-(def data
+(defonce data+stats
   (reaction
+   (println "Recalculating data stats and histograms")
     (-> @model-parsed
-        (update :axis (partial keep (:enabled-axis @view-opts)))
         (assoc :min (into {} (for [a (:axis @model-parsed)]
                                [a (apply min (map a (:rows @model-parsed)))]))
                :max (into {} (for [a (:axis @model-parsed)]
@@ -47,33 +50,58 @@
                                  [a (cond (-> @model-parsed :rows first a number?) :numeric
                                           :else                                    :scalar)]))
                :hist (into {} (for [a (:axis @model-parsed)]
-                                      [a (hist (map a (:rows @model-parsed)))]))))))
+                                [a (hist (map a (:rows @model-parsed)))]))))))
 
-(def canvas-size (reaction (- (/ (- @window-width 10) (count (:axis @data))) 30)))
+(defonce data
+  (reaction
+   (println "Recalculate enabled axis")
+   (update @data+stats :axis (partial keep (:enabled-axis @view-opts)))))
+
+(defonce axis-category-hist
+  (->> (for [row (:rows @model-parsed)
+             a   (:axis @model-parsed)]
+         [[a (get row @active-category)]
+          (get row a)])
+       (group-by first)
+       (reduce (fn [m [[col cat-val] kvs]]
+                 (assoc-in m [col cat-val]
+                           (hist (minimum col) (maximum col) (map second kvs))))
+               {})
+       (let [minimum (:min @data+stats)
+             maximum (:max @data+stats)])
+       (reaction)))
+
+(defonce canvas-size (reaction (- (/ (- @window-width 10) (count (:axis @data))) 30)))
 
 (defn div-with-canvas [draw-canvas-contents]
-  (let [dom-node (atom nil)
-        -width   (reaction (.-clientWidth (.-firstChild @dom-node)))
-        -height  (reaction (.-clientHeight (.-firstChild @dom-node)))]
+  (let [dom-node (atom nil)]
     (reagent/create-class
      {:component-did-update #(draw-canvas-contents
-                               (-> (.-firstChild @dom-node) (.getContext "2d"))
-                               @canvas-size
-                               @canvas-size)
+                              (-> (.-firstChild @dom-node) (.getContext "2d"))
+                              @canvas-size
+                              @canvas-size)
       :component-did-mount  #(reset! dom-node (rdom/dom-node %))
       :reagent-render
       #(do
-        @canvas-size ;; Trigger re-render on window resizes
-        @view-opts
-        [:div.with-canvas
-         [:canvas (when-let [node @dom-node]
-                    {:width  @canvas-size
-                     :height @canvas-size})]])})))
+         @canvas-size ;; Trigger re-render on window resizes
+         @view-opts
+         [:div.with-canvas
+          [:canvas (when-let [node @dom-node]
+                     {:width  @canvas-size
+                      :height @canvas-size})]])})))
 
 (defn on-window-resize [evt]
   (reset! window-width (.-innerWidth js/window)))
 
-(def colors ["black" "red" "blue" "yellow" "lime" "purple" "pink" "brown"])
+
+(defonce categories
+  (reaction
+   (println "recalc categories")
+   (mapv (fn [row] (get row @active-category :none)) (:rows @model-parsed))))
+
+(defonce category->color
+  (reaction (zipmap (set @categories)
+                    ["red" "blue" "yellow" "lime" "purple" "pink" "brown"])))
 
 (defn render-table-fn [x-col y-col ctx w h]
   (let [off-x  (-> @data :min x-col)
@@ -81,32 +109,43 @@
         x-width (- (-> @data :max x-col) off-x)
         y-width (- (-> @data :max y-col) off-y)
         scale-x (/ @canvas-size x-width)
-        scale-y (/ @canvas-size y-width)
+        scale-y (/ @canvas-size y-width)]
+    (doseq [[x y c] (map vector
+                         (map x-col (:rows @data))
+                         (map y-col (:rows @data))
+                         (map @category->color @categories))]
+      (set! (.-fillStyle ctx) c)
+      (.fillRect ctx
+                 (* scale-x (- x off-x))
+                 (* scale-y (- y off-y))
+                 10
+                 10))))
 
-        colors (atom colors)
-        colors (memoize (fn [c] (first (swap! colors next))))]
-  (doseq [[x y c] (map (juxt x-col y-col
-    (fn [row] (colors (get row (:category @view-opts))))) (:rows @data))]
-    (set! (.-fillStyle ctx) c)
-    (.fillRect ctx
-      (* scale-x (- x off-x))
-      (* scale-y (- y off-y))
-      10
-      10))))
-
-(defn render-table-histogram [y-col ctx w h]
+(defn- render-table-histogram [y-col ctx w h]
+  (assert (keyword? y-col))
+  (println "Rendering histogram for " y-col)
   (let [buckets (-> @data :hist y-col)
         x-width (/ @canvas-size (count buckets))
-        off-y   0
-        scale-y (/ (- @canvas-size 5) (- (apply max buckets) off-y))]
+        scale-y (/ (- @canvas-size 5) (apply max buckets))]
     (set! (.-fillStyle ctx) "silver")
     (doseq [[i bucket] (map-indexed vector buckets)
-            :let [height (->> off-y (- bucket) (* scale-y))]]
+            :let [height (* bucket scale-y)]]
       (.fillRect ctx
-        (* x-width i)
-        (- @canvas-size height)
-        x-width
-        height))))
+                 (* x-width i)
+                 (- @canvas-size height)
+                 x-width
+                 height))
+    (doseq [[k buckets] (get @axis-category-hist y-col)
+            :when k]
+      (doseq [[i bucket] (map-indexed vector buckets)
+              :let [height (* bucket scale-y)]]
+        (set! (.-fillStyle ctx) (@category->color k))
+        (.fillRect ctx
+                   (* x-width i)
+                   (- @canvas-size height 1)
+                   x-width
+                   1
+                   )))))
 
 (defn render-table []
   [:table {:border "1"}
@@ -134,7 +173,7 @@
       (.then (fn [txt] (reset! textarea-text txt)))
       (.then (fn [_] (println "Success loaded" url)))))
 
-(defn csv-box []
+(defn- csv-box []
   [:div.controls
    [:h2 "1. Data Source"]
    [:p "Enter the dataset CSV in the text box or load an example dataset:"]
@@ -167,7 +206,8 @@
                 :on-change (fn [e] (if (.-checked (.-target e))
                                      (swap! view-opts update :enabled-axis conj i)
                                      (swap! view-opts update :enabled-axis disj i)))}]
-       (str (name i))]))
+       [:span (str (name i))]]))
+   ;; TODO: show color codes.
    [:p "Category: "
     [:select
      {:on-change (fn [e] (swap! view-opts assoc :category (some-> e .-target .-value not-empty keyword)))}
@@ -175,7 +215,18 @@
      (doall
       (for [i (:axis @model-parsed)
             :when (-> @view-opts :enabled-axis i not)]
-        [:option {:key (str i) :value (name i)} (name i)]))]]])
+        [:option {:key (str i) :value (name i)} (name i)]))]]
+   (when @active-category
+     (doall
+      (for [[cat-val color] @category->color]
+        [:span {:key cat-val
+                :style {:padding "0.2em 1em"}}
+         [:span {:style {:display "inline-block"
+                         :width "1em"
+                         :height "1em"
+                         :margin-right "0.2em"
+                         :background color}}]
+         [:span [:i (str cat-val)]]])))])
 
 (defn- application []
   [:div
