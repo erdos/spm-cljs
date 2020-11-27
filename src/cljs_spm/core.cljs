@@ -148,7 +148,7 @@
                    )))))
 
 (defn render-table []
-  [:table {:border "1"}
+  [:table {:border "1" :style {:margin "1em auto"}}
     [:thead
       [:tr
         (doall (for [col (:axis @data)]
@@ -174,23 +174,21 @@
       (.then (fn [_] (println "Success loaded" url)))))
 
 (defn- csv-box []
-  [:div.controls
-   [:h2 "1. Data Source"]
-   [:p "Enter the dataset CSV in the text box or load an example dataset:"]
-   [:div {:style {:padding "1em" :background "#fff3f9"}}
-    [:button {:on-click #(load-url "https://gist.githubusercontent.com/curran/a08a1080b88344b0c8a7/raw/639388c2cbc2120a14dcf466e85730eb8be498bb/iris.csv")}
-     "Load Iris dataset"]
-    [:button {:on-click #(load-url "https://raw.githubusercontent.com/selva86/datasets/master/seeds.csv")}
-     "Load Wheat Seeds dataset"]]
-   [:textarea {:rows 11
-               :on-change #(reset! textarea-text (.. % -target -value))
-               :style {:resize "none"
-                       :width "90%"
-                       :display "block"
-                       :overflow "auto"}
-               :value (str @textarea-text)}]
-   [:br]
-   [:div (str (count (:rows @model-parsed))) " rows"]])
+  (letfn [(btn [name url] [:button {:on-click #(load-url url) :style {:margin "0em 0.5em"}} name])]
+    [:div.controls
+     [:h2 "1. Data Source"]
+     [:p "Enter the dataset CSV in the text box or load an example dataset:"
+      (btn "Load Iris dataset" "https://gist.githubusercontent.com/curran/a08a1080b88344b0c8a7/raw/639388c2cbc2120a14dcf466e85730eb8be498bb/iris.csv")
+      (btn "Load Wheat Seeds dataset" "https://raw.githubusercontent.com/selva86/datasets/master/seeds.csv")]
+     [:textarea {:rows 11
+                 :on-change #(reset! textarea-text (.. % -target -value))
+                 :style {:resize "none"
+                         :width "90%"
+                         :display "block"
+                         :overflow "auto"}
+                 :value (str @textarea-text)}]
+     [:br]
+     [:div (str (count (:rows @model-parsed))) " rows"]]))
 
 (defn- opts-box []
   [:div.controls
