@@ -261,5 +261,6 @@ cljs.core.cst$kw$cljs$core_SLASH_not_DASH_found = new cljs.core.Keyword("cljs.co
 cljs.core.cst$sym$more = new cljs.core.Symbol(null,"more","more",-418290273,null);
 cljs.core.cst$sym$def = new cljs.core.Symbol(null,"def","def",597100991,null);
 cljs.core.cst$kw$span = new cljs.core.Keyword(null,"span","span",1394872991);
+cljs.core.cst$kw$margin = new cljs.core.Keyword(null,"margin","margin",-995903681);
 cljs.core.cst$sym$f = new cljs.core.Symbol(null,"f","f",43394975,null);
 cljs.core.cst$sym$next_DASH_iter = new cljs.core.Symbol(null,"next-iter","next-iter",1526626239,null);
