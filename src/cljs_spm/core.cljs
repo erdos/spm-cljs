@@ -1,19 +1,20 @@
 (ns cljs-spm.core
-    (:require [reagent.core :as reagent :refer [atom]]
-              [goog.net.XhrIo :as xhr]))
+  (:require [reagent.core :as reagent :refer [atom]]
+            [reagent.ratom :refer [reaction]]
+            [reagent.dom :as rdom]))
 
 (def window-width (atom 0))
 
 (enable-console-print!)
 
-(defonce textarea-text (atom ""))
+(defonce textarea-text (reagent/atom ""))
 
 (defn maybe-number [s]
   (let [p (js/Number.parseFloat s)]
     (if (js/Number.isNaN p) s p)))
 
 (def model-parsed
-  (reagent.ratom/reaction
+  (reaction
     (let [rows   (clojure.string/split-lines @textarea-text)
           rows   (map (fn [line] (clojure.string/split line ",")) rows)
           header (distinct (map keyword (first rows)))
@@ -21,7 +22,7 @@
           rows   (map (partial zipmap header) rows)]
         {:rows rows :axis header})))
 
-(def view-opts (atom {:enabled-axis #{} :category nil}))
+(defonce view-opts (reagent/atom {:enabled-axis #{} :category nil}))
 
 (defn hist
   ([xs] (hist (min 10 (count xs)) xs))
@@ -35,7 +36,7 @@
      (mapv (comp count gs) (range 0 n)))))
 
 (def data
-  (reagent.ratom/reaction
+  (reaction
     (-> @model-parsed
         (update :axis (partial keep (:enabled-axis @view-opts)))
         (assoc :min (into {} (for [a (:axis @model-parsed)]
@@ -48,18 +49,18 @@
                :hist (into {} (for [a (:axis @model-parsed)]
                                       [a (hist (map a (:rows @model-parsed)))]))))))
 
-(def canvas-size (reagent.ratom/reaction (- (/ (- @window-width 10) (count (:axis @data))) 30)))
+(def canvas-size (reaction (- (/ (- @window-width 10) (count (:axis @data))) 30)))
 
 (defn div-with-canvas [draw-canvas-contents]
-  (let [dom-node (reagent/atom nil)
-        -width   (reagent.ratom/reaction (.-clientWidth (.-firstChild @dom-node)))
-        -height  (reagent.ratom/reaction (.-clientHeight (.-firstChild @dom-node)))]
+  (let [dom-node (atom nil)
+        -width   (reaction (.-clientWidth (.-firstChild @dom-node)))
+        -height  (reaction (.-clientHeight (.-firstChild @dom-node)))]
     (reagent/create-class
      {:component-did-update #(draw-canvas-contents
                                (-> (.-firstChild @dom-node) (.getContext "2d"))
                                @canvas-size
                                @canvas-size)
-      :component-did-mount  #(reset! dom-node (reagent/dom-node %))
+      :component-did-mount  #(reset! dom-node (rdom/dom-node %))
       :reagent-render
       #(do
         @canvas-size ;; Trigger re-render on window resizes
@@ -113,7 +114,9 @@
       [:tr
         (doall (for [col (:axis @data)]
           [:th {:key col}
-            (name col)  " " [:small "(" (-> @data :min col) "-" (-> @data :max col) ")"]]))]]
+           (name col)
+           [:br]
+           [:center [:small "(" (-> @data :min col) "-" (-> @data :max col) ")"]]]))]]
     [:tbody
       (doall (for [[i x-col] (map-indexed vector (:axis @data))]
       [:tr {:key (str "col" x-col)}
@@ -125,63 +128,65 @@
            (< i j) [div-with-canvas (partial render-table-fn y-col x-col)]
            :else   [:div.empty])]))]))]])
 
-(defn load-url [url]
- (xhr/send url
-           (fn [event]
-             (let [res (-> event .-target .getResponseText)]
-               (println "Success loading" url)
-               (reset! textarea-text res)))))
+(defn- load-url [url]
+  (-> (js/fetch url)
+      (.then (fn [response] (.text response)))
+      (.then (fn [txt] (reset! textarea-text txt)))
+      (.then (fn [_] (println "Success loaded" url)))))
 
 (defn csv-box []
   [:div.controls
-    [:h2 "1. Data Source"]
-    [:p "Enter the dataset CSV here."]
+   [:h2 "1. Data Source"]
+   [:p "Enter the dataset CSV in the text box or load an example dataset:"]
+   [:div {:style {:padding "1em" :background "#fff3f9"}}
     [:button {:on-click #(load-url "https://gist.githubusercontent.com/curran/a08a1080b88344b0c8a7/raw/639388c2cbc2120a14dcf466e85730eb8be498bb/iris.csv")}
-      "Load Iris dataset"]
+     "Load Iris dataset"]
     [:button {:on-click #(load-url "https://raw.githubusercontent.com/selva86/datasets/master/seeds.csv")}
-      "Load Wheat Seeds dataset"]
-
-    ;; [:p (str @textarea-text)]
-    ;; [:p (str @model-parsed)]
-    [:textarea {:rows 11
-      :on-change    #(reset! textarea-text (.. % -target -value))
+     "Load Wheat Seeds dataset"]]
+   [:textarea {:rows 11
+               :on-change #(reset! textarea-text (.. % -target -value))
                :style {:resize "none"
                        :width "90%"
                        :display "block"
                        :overflow "auto"}
-               :value (str @textarea-text)}
+               :value (str @textarea-text)}]
+   [:br]
+   [:div (str (count (:rows @model-parsed))) " rows"]])
 
-    ] [:br]
-    [:div (str (count (:rows @model-parsed))) " rows"]
-    ])
-
-(defn opts-box []
+(defn- opts-box []
   [:div.controls
     [:h2 "2. Display options"]
     [:p "Dimensions:"]
+   (doall
     (for [i (:axis @model-parsed)
           :when (= :numeric (get-in @data [:type i]))]
-     [:label {:key i :style {:padding "0.2em 1em"}}
+      [:label {:key i
+               :style {:padding "0.2em 1em"}}
        [:input {:type "checkbox"
                 :defaultChecked (-> @view-opts :enabled-axis i boolean)
                 :on-change (fn [e] (if (.-checked (.-target e))
-                                    (swap! view-opts update :enabled-axis conj i)
-                                    (swap! view-opts update :enabled-axis disj i)))}]
-       (str (name i))])
-    [:p "Category:"
-      [:select
-        {:on-change (fn [e] (swap! view-opts assoc :category (some-> e .-target .-value not-empty keyword)))}
-      (for [i (:axis @model-parsed)]
-                 [:option {:key (str i) :value (name i)} (name i)])]]])
+                                     (swap! view-opts update :enabled-axis conj i)
+                                     (swap! view-opts update :enabled-axis disj i)))}]
+       (str (name i))]))
+   [:p "Category: "
+    [:select
+     {:on-change (fn [e] (swap! view-opts assoc :category (some-> e .-target .-value not-empty keyword)))}
+     [:option {:value ""} "No Category"]
+     (doall
+      (for [i (:axis @model-parsed)
+            :when (-> @view-opts :enabled-axis i not)]
+        [:option {:key (str i) :value (name i)} (name i)]))]]])
 
-(defn hello-world []
+(defn- application []
   [:div
    [csv-box]
-   (when (not-empty (:rows @model-parsed)) [opts-box])
-   (when (not-empty (:rows @data)) [render-table])])
+   (when (not-empty (:rows @model-parsed))
+     [opts-box])
+   (when (not-empty (:rows @data))
+     [render-table])])
 
 (defn ^:export on-window-load []
-  (reagent/render-component [hello-world] (. js/document (getElementById "app")))
+  (rdom/render [application] (. js/document (getElementById "app")))
   (.addEventListener js/window "resize" on-window-resize)
   (on-window-resize nil))
 
