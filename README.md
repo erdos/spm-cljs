@@ -1,6 +1,6 @@
-# cljs-spm
+# spm-cljs
 
-Scatter Plot Matrix implementation in ClojureScript.
+Scatter Plot Matrix implementation in ClojureScript. See it [live here](https://scatterplotmatrix.erdos.dev).
 
 ## Setup
 
